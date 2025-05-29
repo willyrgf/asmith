@@ -16,7 +16,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import re
 
-from nio import AsyncClient, MatrixRoom, RoomMessageText, LoginError, SyncError, exceptions
+from nio import (
+    AsyncClient,
+    MatrixRoom,
+    RoomMessageText,
+    LoginError,
+    SyncError,
+    exceptions,
+    RoomMemberEvent,
+)
+from nio.events.invite_events import InviteMemberEvent  # Import InviteMemberEvent at the top
 
 # Application information from environment variables
 APP_NAME = os.getenv("ASMITH_APP_NAME", "asmith")
@@ -674,6 +683,13 @@ async def setup_bot(args, connection_monitor):
 
         logger.info(f"Starting {APP_NAME} v{APP_VERSION}")
 
+        logger.info("Currently joined rooms:")
+        if client.rooms:
+            for room_id, room in client.rooms.items():
+                logger.info(f"- {room.display_name} ({room_id})")
+        else:
+            logger.info("- No rooms joined yet.")
+
         # Auto-execute loadlast command if there are saved files
         files = storage.list_saved_files()
         if files:
@@ -773,10 +789,88 @@ async def setup_bot(args, connection_monitor):
                 logger.error(f"Error processing command '{command}': {e}", exc_info=True)
                 await send_matrix_message(client, room.room_id, f"An error occurred while processing your command: {e}")
 
-    client.add_event_callback(on_message_matrix, RoomMessageText)
-    client.add_event_callback(lambda _: on_ready_matrix(), SyncError) # This is a placeholder for on_ready equivalent
+    async def on_room_member_event(room: MatrixRoom, event: RoomMemberEvent) -> None:
+        logger.info("!!! ON_ROOM_MEMBER_EVENT CALLED !!!") 
+        logger.info(
+            f"on_room_member_event (generic): room={room.room_id}, sender={event.sender}, "
+            f"state_key='{event.state_key}', membership='{event.membership}', client_user_id='{client.user_id}'"
+        )
+        # This callback handles general m.room.member events.
+        # It will NOT be called for InviteMemberEvents if a specific handler for InviteMemberEvent is registered,
+        # because nio calls the most specific handler based on exact event type.
+        # If InviteMemberEvent could not be imported (script would fail earlier), this would be the only place,
+        # but it still wouldn't catch InviteMemberEvents due to exact type matching.
+        if event.membership == "invite":
+            logger.warning(
+                f"[RoomMemberEventGeneric] Received an invite event in the generic RoomMemberEvent handler for room {room.room_id}. "
+                "This is unexpected if a specific InviteMemberEvent handler is active. "
+                "The invite might not be auto-accepted if the specific handler failed to register or run."
+            )
+        else:
+            logger.info(
+                f"[RoomMemberEventGeneric] Non-invite member event: membership='{event.membership}' "
+                f"for user '{event.state_key}' in room {room.room_id}."
+            )
 
-    return client, storage
+    async def on_invite_received(room: MatrixRoom, event: InviteMemberEvent) -> None:
+        """Callback for when an invite is received for the bot."""
+        logger.info("!!! ON_INVITE_RECEIVED CALLED !!!")
+        logger.info(
+            f"on_invite_received: room={room.room_id}, sender={event.sender}, "
+            f"state_key='{event.state_key}', membership='{event.membership}', client_user_id='{client.user_id}'"
+        )
+
+        # event.membership should always be "invite" for InviteMemberEvent
+        if event.membership == "invite":
+            event_state_key_str = str(event.state_key) if event.state_key is not None else ""
+            client_user_id_str = str(client.user_id) if client.user_id is not None else ""
+
+            # Check if the invite is for our bot
+            if event_state_key_str.strip() == client_user_id_str.strip() and event_state_key_str.strip():
+                target_room_id = room.room_id
+                logger.info(
+                    f"[InviteHandler] Received invite to room: {target_room_id} from {event.sender} "
+                    f"for user {event.state_key}. Attempting to join."
+                )
+                try:
+                    await client.join(target_room_id)
+                    logger.info(f"[InviteHandler] Successfully joined room: {target_room_id}")
+                except exceptions.MatrixRequestError as e:
+                    logger.error(
+                        f"[InviteHandler] Failed to join room {target_room_id} (MatrixRequestError): "
+                        f"Status={e.status_code}, ErrCode={e.errcode}, Message='{e.message}'"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[InviteHandler] Failed to join room {target_room_id} (Unexpected Exception): "
+                        f"{type(e).__name__} - {e}",
+                        exc_info=True,
+                    )
+            else:
+                logger.warning(
+                    f"[InviteHandler] Invite for user '{event.state_key}' in room {room.room_id} "
+                    f"is not for this bot ('{client.user_id}') or state_key is empty/invalid. "
+                    f"Comparing StateKey: '{event_state_key_str.strip()}' with ClientUID: '{client_user_id_str.strip()}'"
+                )
+        else:
+            # This case should ideally not be reached if the event is truly an InviteMemberEvent
+            logger.warning(
+                f"[InviteHandler] Received non-invite membership '{event.membership}' in InviteMemberEvent callback for room {room.room_id}. "
+                "This is unexpected."
+            )
+
+    logger.info("Registering on_message_matrix callback...")
+    client.add_event_callback(on_message_matrix, RoomMessageText)
+    
+    logger.info("Registering on_room_member_event (generic) callback...")
+    client.add_event_callback(on_room_member_event, RoomMemberEvent) # For non-invite member events
+    
+    logger.info("Registering on_invite_received callback for InviteMemberEvent...")
+    # This uses the InviteMemberEvent class imported at the top of the file.
+    # If that import failed, the script would have exited with an ImportError.
+    client.add_event_callback(on_invite_received, InviteMemberEvent)
+
+    return client, storage, on_ready_matrix # Return on_ready_matrix as well
 
 
 async def main() -> None:
@@ -809,7 +903,10 @@ async def main() -> None:
     )
 
     # Set up the bot
-    client, _storage = await setup_bot(args, connection_monitor)
+    client, storage, on_ready_matrix_cb = await setup_bot(args, connection_monitor)
+
+    # Call on_ready_matrix after setup and before sync
+    await on_ready_matrix_cb()
 
     # Run the bot
     try:
