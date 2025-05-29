@@ -517,7 +517,6 @@ class ConnectionMonitor:
             "LoginError",
             "SyncError",
             "LocalProtocolError", # nio.exceptions.LocalProtocolError
-            "OlmUnpickleError", # nio.exceptions.OlmUnpickleError
             "EncryptionError", # nio.exceptions.EncryptionError
         ]
         if error_type in critical_errors and self.consecutive_failures >= 2:
@@ -816,8 +815,8 @@ async def main() -> None:
     try:
         logger.info("Starting bot sync...")
         # The `sync_forever` method will block until the client is stopped
-        await client.sync_forever(timeout=30000, callback=connection_monitor.connection_successful)
-    except (LoginError, SyncError, exceptions.LocalProtocolError, exceptions.OlmUnpickleError, exceptions.EncryptionError) as e:
+        await client.sync_forever(timeout=30000)
+    except (LoginError, SyncError, exceptions.LocalProtocolError, exceptions.EncryptionError) as e:
         error_type = type(e).__name__
         logger.exception(f"Matrix client error: {error_type}: {e}")
         if connection_monitor.connection_failed(error_type):
