@@ -6,54 +6,44 @@
     flake-utils.url = "github:numtide/flake-utils";
 
     # Syng
-    syng.url = "github:willyrgf/syng?rev=cc1f256479f32e79edc28ca0868f2a21d7aed6cf";
+    syng.url =
+      "github:willyrgf/syng?rev=cc1f256479f32e79edc28ca0868f2a21d7aed6cf";
   };
 
   outputs = { self, nixpkgs, flake-utils, syng }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        pythonWithPkgs =
-          pkgs.python3.withPackages (ps: with ps; [ matrix-nio ruff ]);
-        
         appName = "asmith";
         appVersion = "0.0.1";
-        
+
         syngPkg = syng.packages.${system}.default;
       in {
         packages = {
-          asmith = pkgs.stdenv.mkDerivation {
+          asmith = pkgs.rustPlatform.buildRustPackage {
             pname = appName;
             version = appVersion;
             src = self;
 
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            buildInputs = [ pythonWithPkgs pkgs.git ];
+            cargoLock = { lockFile = ./Cargo.lock; };
 
-            dontBuild = true;
+            nativeBuildInputs = with pkgs; [
+              makeWrapper
+              cargo
+              rustc
+              rustfmt
+              pkg-config
+            ];
 
-            installPhase = ''
-              mkdir -p $out/bin $out/lib
-              if [ -f "$src/asmith.py" ]; then
-                cp $src/${appName}.py $out/lib/${appName}.py
-                makeWrapper ${pythonWithPkgs}/bin/python $out/bin/${appName} \
-                  --add-flags "$out/lib/${appName}.py" \
-                  --prefix PATH : ${pkgs.git}/bin \
-                  --set ASMITH_APP_NAME "${appName}" \
-                  --set ASMITH_APP_VERSION "${appVersion}"
-              else
-                echo "ERROR: ${appName}.py not found in source directory" >&2
-                exit 1
-              fi
-            '';
+            buildInputs = with pkgs; [ openssl git sqlite ];
           };
 
           asmith-syng = pkgs.writeShellScriptBin "asmith-syng" ''
             #!/usr/bin/env bash
-            
+
             # Capture the SSH Auth Socket from the invoking environment
             INVOKING_SSH_AUTH_SOCK="''${SSH_AUTH_SOCK}"
-            
+
             # Function to display usage
             usage() {
               echo "Usage: asmith-syng [--data_dir PATH]"
@@ -66,10 +56,10 @@
               echo "  SSH_AUTH_SOCK          Optional: Forwarded if set in invoking environment"
               exit 1
             }
-            
+
             # Parse arguments
             DATA_DIR="./data"
-            
+
             while [[ $# -gt 0 ]]; do
               case "$1" in
                 --data_dir)
@@ -85,16 +75,16 @@
                   ;;
               esac
             done
-            
+
             # Check if DISCORD_TOKEN is set
             if [ -z "''${DISCORD_TOKEN}" ]; then
               echo "ERROR: DISCORD_TOKEN environment variable must be set"
               usage
             fi
-            
+
             # Create the directory if it doesn't exist
             mkdir -p "$DATA_DIR"
-            
+
             # Function to clean up all background processes
             cleanup() {
               echo "Cleaning up background processes..."
@@ -106,7 +96,7 @@
 
             # Set trap to call cleanup function on exit signals
             trap cleanup EXIT SIGINT SIGTERM
-            
+
             # Export the SSH Auth Socket if it was set
             if [ -n "$INVOKING_SSH_AUTH_SOCK" ]; then
               export SSH_AUTH_SOCK="$INVOKING_SSH_AUTH_SOCK"
@@ -121,9 +111,11 @@
 
             echo "Waiting 3s ensure syng already pre pulled any updates on DATA_DIR before running asmith"
             sleep 3
-            
+
             echo "Starting asmith with data directory: $DATA_DIR in background..."
-            ${self.packages.${system}.asmith}/bin/asmith --data_dir "$DATA_DIR" &
+            ${
+              self.packages.${system}.asmith
+            }/bin/asmith --data_dir "$DATA_DIR" &
             ASMITH_PID=$!
 
             # Wait for the main asmith process to finish
@@ -131,7 +123,7 @@
             wait $ASMITH_PID
             ASMITH_EXIT_CODE=$?
             echo "asmith exited with code $ASMITH_EXIT_CODE."
-            
+
             # Explicit cleanup is handled by the EXIT trap when wait returns or script exits
 
             # Exit with the asmith exit code
@@ -152,7 +144,7 @@
               platforms = platforms.all;
             };
           };
-          
+
           asmith-syng = {
             type = "app";
             program = "${self.packages.${system}.asmith-syng}/bin/asmith-syng";
@@ -170,16 +162,17 @@
         devShells = {
           default = pkgs.mkShell {
             name = "asmith-dev-env";
-            packages = [ pythonWithPkgs pkgs.git syngPkg ];
+
+            buildInputs = with pkgs; [ cargo rustc rustfmt git ];
 
             shellHook = ''
               export HISTFILE=$HOME/.history_nix
-              export PYTHONPATH=${builtins.toString ./.}:$PYTHONPATH
-              export PATH=${pythonWithPkgs}/bin:${pkgs.git}/bin:$PATH
               export ASMITH_APP_NAME="${appName}"
               export ASMITH_APP_VERSION="${appVersion}"
-              alias asmith="python ${builtins.toString ./.}/asmith.py"
-              alias asmith-syng="${self.packages.${system}.asmith-syng}/bin/asmith-syng"
+              alias asmith="${self.packages.${system}.asmith}/bin/asmith"
+              alias asmith-syng="${
+                self.packages.${system}.asmith-syng
+              }/bin/asmith-syng"
               echo "asmith development environment activated"
               echo "Type 'asmith' to run the application"
               echo "Type 'asmith-syng --data_dir path/to/directory' to run with git sync"
