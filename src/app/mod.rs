@@ -37,6 +37,12 @@ pub async fn ensure_directories(config: &BotConfig) -> Result<()> {
 
 /// Initialize the Matrix client with session persistence
 pub async fn init_matrix_client(config: &BotConfig) -> Result<AppContext> {
+    if !config.can_login() {
+        warn!("Configuration insufficient for login (homeserver, user ID, and credentials required). Proceeding, but login/restore will likely fail.");
+        // Optionally, could return Err(anyhow!("Cannot initialize client: Insufficient login credentials"))
+        // For now, just warn and let it proceed to fail at login/restore attempt.
+    }
+
     let session_file_path = config.get_session_file_path();
     let store_base_path = config.data_dir.join("matrix_sdk_store");
 
@@ -175,7 +181,7 @@ pub async fn start_sync_loop(context: &AppContext, config: &BotConfig) -> Result
         .initial_sync_token
         .as_ref()
         .map(|token| SyncSettings::default().token(token.clone()))
-        .unwrap_or_else(SyncSettings::default);
+        .unwrap_or_default();
 
     // Use modularized sync loop function with connection monitor
     let session_file_path = config.get_session_file_path(); // Get session file path
@@ -184,7 +190,7 @@ pub async fn start_sync_loop(context: &AppContext, config: &BotConfig) -> Result
         context.client.clone(),
         sync_settings,
         &mut connection_monitor,
-        &session_file_path, // Pass session file path
+        &session_file_path,           // Pass session file path
         &context.client_store_config, // Pass client store config
     )
     .await

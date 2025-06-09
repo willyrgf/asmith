@@ -108,13 +108,6 @@ impl BotConfig {
         self.data_dir.join("session.json")
     }
 
-    pub fn get_todo_lists_file_path(&self) -> PathBuf {
-        self.data_dir.join("todo_lists.json")
-    }
-
-    pub fn get_botman_file_path(&self) -> PathBuf {
-        self.data_dir.join("botman.json")
-    }
 
     pub fn get_homeserver(&self) -> Result<&Url> {
         self.homeserver

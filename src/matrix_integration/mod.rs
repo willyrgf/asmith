@@ -1,7 +1,8 @@
-use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Utc};
+use anyhow::{Context, Result, anyhow, bail};
+// use chrono::{DateTime, Utc}; // Unused
 use futures_util::stream::StreamExt;
 use matrix_sdk::encryption::verification::Verification;
+use matrix_sdk::ruma::OwnedDeviceId;
 use matrix_sdk::ruma::events::room::{
     member::StrippedRoomMemberEvent, message::OriginalSyncRoomMessageEvent,
 };
@@ -15,25 +16,31 @@ use matrix_sdk::ruma::events::{
         start::ToDeviceKeyVerificationStartEventContent,
     },
 };
-use matrix_sdk::{Client, Room, RoomState, config::SyncSettings};
+use matrix_sdk::{
+    Client, Room, RoomState, SessionMeta, SessionTokens, authentication::matrix::MatrixSession,
+    config::SyncSettings,
+};
+use ruma::DeviceId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use std::path::PathBuf;
+
+use std::path::{Path, PathBuf};
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::config::APP_NAME;
 
-use matrix_sdk::authentication::matrix::MatrixSession; // Corrected path
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use rand::{Rng, rngs::ThreadRng};
+use rand_distr::Alphanumeric;
 use tokio::fs as async_fs; // For async file operations
 
+// Removing MatrixAuthData import for now, will let type inference work or add back if needed
 
 // Configuration for the SQLite store
 #[derive(Debug, Serialize, Deserialize, Clone)] // Added Clone
 pub struct ClientStoreConfig {
-    store_path: PathBuf,       // Full path to the SQLite file's directory
+    store_path: PathBuf,      // Full path to the SQLite file's directory
     store_passphrase: String, // Passphrase for encrypting the store
 }
 
@@ -49,12 +56,18 @@ pub async fn restore_session(
     session_file_path: &PathBuf,
     config: &crate::config::BotConfig, // Renamed from _config, will be used
 ) -> Result<(Client, Option<String>, ClientStoreConfig)> {
-    info!("Attempting to restore session from: {}", session_file_path.display());
+    info!(
+        "Attempting to restore session from: {}",
+        session_file_path.display()
+    );
 
     let session_json = async_fs::read_to_string(session_file_path)
         .await
-        .context(format!("Failed to read session file: {}", session_file_path.display()))?;
-    
+        .context(format!(
+            "Failed to read session file: {}",
+            session_file_path.display()
+        ))?;
+
     let persisted_session: PersistedSession =
         serde_json::from_str(&session_json).context("Failed to deserialize session data")?;
 
@@ -62,9 +75,18 @@ pub async fn restore_session(
     let matrix_session = persisted_session.matrix_session;
     let sync_token = persisted_session.sync_token;
 
-    let homeserver_url = config.homeserver.as_ref().ok_or_else(|| anyhow!("Homeserver URL not found in config during session restore"))?;
-    info!("Restoring client with homeserver: {}", homeserver_url.as_str());
-    info!("Using store path: {}", client_store_config.store_path.display());
+    let homeserver_url = config
+        .homeserver
+        .as_ref()
+        .ok_or_else(|| anyhow!("Homeserver URL not found in config during session restore"))?;
+    info!(
+        "Restoring client with homeserver: {}",
+        homeserver_url.as_str()
+    );
+    info!(
+        "Using store path: {}",
+        client_store_config.store_path.display()
+    );
 
     let client = Client::builder()
         .homeserver_url(homeserver_url.as_str())
@@ -80,60 +102,110 @@ pub async fn restore_session(
         .restore_session(matrix_session.clone()) // Restore full session state
         .await
         .context("Failed to restore Matrix session")?;
-    
-    info!("Successfully restored session for user: {}", matrix_session.meta.user_id);
+
+    info!(
+        "Successfully restored session for user: {}",
+        matrix_session.meta.user_id
+    );
     Ok((client, sync_token, client_store_config))
 }
 
 pub async fn login_and_save_session(
     session_file_path: &PathBuf,
-    store_base_path: &PathBuf, // Base directory for all session stores
+    store_base_path: &Path, // Base directory for all session stores
     config: &crate::config::BotConfig,
 ) -> Result<(Client, Option<String>, ClientStoreConfig)> {
     info!("Performing new login and creating new session store.");
 
-    let homeserver_url_str = config.homeserver.as_ref().ok_or_else(|| anyhow!("Homeserver URL not provided in config"))?;
-    
+    let homeserver_url_str = config.get_homeserver()?;
+
     // Create a unique directory for this session's store
-    let mut rng = thread_rng();
+    let mut rng = ThreadRng::default();
     let store_subdir_name: String = std::iter::repeat_with(|| rng.sample(Alphanumeric))
         .map(char::from)
         .take(16) // Increased length for more uniqueness
         .collect();
     let store_path = store_base_path.join(store_subdir_name);
-    async_fs::create_dir_all(&store_path).await.context(format!(
-        "Failed to create store directory at {}",
-        store_path.display()
-    ))?;
+    async_fs::create_dir_all(&store_path)
+        .await
+        .context(format!(
+            "Failed to create store directory at {}",
+            store_path.display()
+        ))?;
 
     let store_passphrase: String = std::iter::repeat_with(|| rng.sample(Alphanumeric))
         .map(char::from)
         .take(32)
         .collect();
 
-    info!("Building client for new login. Homeserver: {}", homeserver_url_str.as_str());
+    info!(
+        "Building client for new login. Homeserver: {}",
+        homeserver_url_str.as_str()
+    );
     info!("New SQLite store will be at: {}", store_path.display());
 
-    let client = Client::builder()
+    let client_builder = Client::builder()
         .homeserver_url(homeserver_url_str.as_str())
-        .sqlite_store(&store_path, Some(&store_passphrase))
+        .sqlite_store(&store_path, Some(&store_passphrase)); // Specify server versions
+
+    let client = client_builder
         .build()
         .await
         .context("Failed to build client for new login")?;
 
     // Perform login
     if let Some(token) = &config.access_token {
-        client.matrix_auth().login_token(token.as_str()).initial_device_display_name(APP_NAME).send().await.context("Login with access token failed")?;
-    } else if let (Some(user_id), Some(password)) = (&config.user_id, &config.password) {
-        client.matrix_auth().login_username(user_id.as_str(), password.as_str()).initial_device_display_name(APP_NAME).send().await.context("Login with username/password failed")?;
+        tracing::info!("Attempting to log in with access token.");
+        let user_id = config.get_user_id().context("User ID not found in config, but access token is present. User ID is required for token login.")?;
+
+        let device_id: OwnedDeviceId = DeviceId::new();
+        tracing::info!(
+            "Generated new device ID for token login: {}",
+            device_id.as_str()
+        );
+
+        let session_struct = MatrixSession {
+            meta: SessionMeta {
+                user_id: user_id.to_owned(), // user_id is &UserId, convert to OwnedUserId
+                device_id,
+            },
+            tokens: SessionTokens {
+                access_token: token.clone(),
+                refresh_token: None, // BotConfig doesn't currently provide a refresh_token
+            },
+        };
+
+        client
+            .restore_session(session_struct)
+            .await
+            .context("Failed to restore session with token")?;
+        tracing::info!("Successfully logged in with access token and restored session.");
+    } else if let (Ok(user_id), Some(password)) = (config.get_user_id(), &config.password) {
+        client
+            .matrix_auth()
+            .login_username(user_id.as_str(), password.as_str())
+            .initial_device_display_name(APP_NAME)
+            .send()
+            .await
+            .context("Login with username and password failed")?;
     } else {
-        return Err(anyhow!("No valid credentials (access token or username/password) provided in config."));
+        bail!(
+            "Login failed: Ensure homeserver, user ID, and either password or access token are correctly configured."
+        );
     }
 
-    info!("Login successful for user: {}", client.user_id().ok_or_else(|| anyhow!("User ID not available after login"))?);
+    info!(
+        "Login successful for user: {}",
+        client
+            .user_id()
+            .ok_or_else(|| anyhow!("User ID not available after login"))?
+    );
 
-    let matrix_session = client.matrix_auth().session().ok_or_else(|| anyhow!("Failed to get MatrixSession after login"))?;
-    
+    let matrix_session = client
+        .matrix_auth()
+        .session()
+        .ok_or_else(|| anyhow!("Failed to get MatrixSession after login"))?;
+
     let client_store_config = ClientStoreConfig {
         store_path,
         store_passphrase,
@@ -149,8 +221,11 @@ pub async fn login_and_save_session(
         .context("Failed to serialize session data for saving")?;
     async_fs::write(session_file_path, session_json)
         .await
-        .context(format!("Failed to write session file to {}", session_file_path.display()))?;
-    
+        .context(format!(
+            "Failed to write session file to {}",
+            session_file_path.display()
+        ))?;
+
     info!("Session saved to: {}", session_file_path.display());
     Ok((client, None, client_store_config))
 }
@@ -162,9 +237,15 @@ pub async fn save_current_session(
     client_store_config: &ClientStoreConfig, // Pass the existing store config
     current_sync_token: Option<String>,
 ) -> Result<()> {
-    info!("Attempting to save current session to: {}", session_file_path.display());
+    info!(
+        "Attempting to save current session to: {}",
+        session_file_path.display()
+    );
 
-    let matrix_session = client.matrix_auth().session().ok_or_else(|| anyhow!("Failed to get MatrixSession from client for saving"))?;
+    let matrix_session = client
+        .matrix_auth()
+        .session()
+        .ok_or_else(|| anyhow!("Failed to get MatrixSession from client for saving"))?;
 
     let persisted_session_data = PersistedSession {
         client_store_config: client_store_config.clone(),
@@ -176,19 +257,24 @@ pub async fn save_current_session(
         .context("Failed to serialize current session data for saving")?;
     async_fs::write(session_file_path, session_json)
         .await
-        .context(format!("Failed to write current session file to {}", session_file_path.display()))?;
+        .context(format!(
+            "Failed to write current session file to {}",
+            session_file_path.display()
+        ))?;
 
-    info!("Successfully saved current session to: {}", session_file_path.display());
+    info!(
+        "Successfully saved current session to: {}",
+        session_file_path.display()
+    );
     Ok(())
 }
 
 pub struct ConnectionMonitor {
     pub max_retries: usize,
     pub consecutive_failures: usize,
-    pub total_failures: usize,
-    pub failure_types: HashMap<String, usize>,
-    pub last_failure_time: Option<DateTime<Utc>>,
-    pub first_failure_time: Option<DateTime<Utc>>,
+    pub total_failures: usize, // This field was present and should remain
+    pub failure_types: HashMap<String, usize>, // This field was present and should remain
+                               // last_failure_time and first_failure_time were intentionally removed
 }
 
 impl ConnectionMonitor {
@@ -198,31 +284,43 @@ impl ConnectionMonitor {
             consecutive_failures: 0,
             total_failures: 0,
             failure_types: HashMap::new(),
-            last_failure_time: None,
-            first_failure_time: None,
         }
     }
+
     pub fn connection_successful(&mut self) {
         if self.consecutive_failures > 0 {
             info!(
-                "Connection restored after {} consecutive failures",
-                self.consecutive_failures
+                "Connection restored after {} consecutive failures. Total overall failures: {}",
+                self.consecutive_failures, self.total_failures
             );
         }
         self.consecutive_failures = 0;
     }
+
     pub fn connection_failed(&mut self, error_type: String) -> bool {
         self.total_failures += 1;
         *self.failure_types.entry(error_type.clone()).or_insert(0) += 1;
         self.consecutive_failures += 1;
+
         if self.consecutive_failures >= self.max_retries {
             warn!(
-                "Max retries ({}) reached for error type: {}",
-                self.max_retries, error_type
+                "Max retries ({}) reached for error type: {}. Total failures for this type: {}, Total overall failures: {}",
+                self.max_retries,
+                error_type,
+                self.failure_types.get(&error_type).unwrap_or(&0),
+                self.total_failures
             );
-            true
+            true // Indicate that max retries have been reached
         } else {
-            false
+            info!(
+                "Connection failed ({} of {} retries for error type: {}). Total failures for this type: {}, Total overall failures: {}",
+                self.consecutive_failures,
+                self.max_retries,
+                error_type,
+                self.failure_types.get(&error_type).unwrap_or(&0),
+                self.total_failures
+            );
+            false // Indicate that max retries have not been reached
         }
     }
 }
@@ -294,7 +392,7 @@ pub async fn handle_verification_events(client: Client) {
             {
                 // Clone necessary items for the spawned task
                 let sas_clone = sas.clone(); // Sas object from SDK is typically an Arc wrapper, so clone is cheap.
-                let _client_clone = c.clone(); 
+                let _client_clone = c.clone();
                 let sender_clone = sender.clone();
                 let flow_id_clone = flow_id_str.clone();
 
@@ -314,7 +412,6 @@ pub async fn handle_verification_events(client: Client) {
                                     warn!(sender = %sender_clone, flow_id = %flow_id_clone, "SAS changes stream ended before completion or cancellation.");
                                     break; // Stream ended
                                 }
-                                
                                 info!(sender = %sender_clone, flow_id = %flow_id_clone, "SAS state change detected. Re-evaluating.");
 
                                 // Check for cancellation or completion first
@@ -322,7 +419,6 @@ pub async fn handle_verification_events(client: Client) {
                                     info!(sender = %sender_clone, flow_id = %flow_id_clone, "SAS verification was cancelled. Exiting task.");
                                     break;
                                 }
-    
                                 if sas_clone.is_done() {
                                     info!(sender = %sender_clone, flow_id = %flow_id_clone, "SAS verification is done. Exiting task.");
                                     break;
@@ -345,7 +441,7 @@ pub async fn handle_verification_events(client: Client) {
                                             "SAS decimals available. Confirming..."
                                         );
                                     }
-                                    if let Err(e) = sas_clone.confirm().await { 
+                                    if let Err(e) = sas_clone.confirm().await {
                                         error!(sender = %sender_clone, flow_id = %flow_id_clone, "Failed to confirm SASv1 verification: {e:?}");
                                     } else {
                                         info!(sender = %sender_clone, flow_id = %flow_id_clone, "Successfully sent SASv1 confirmation.");
@@ -355,7 +451,7 @@ pub async fn handle_verification_events(client: Client) {
                                 }
                             }
                             // Timeout to prevent task from running indefinitely
-                            _ = tokio::time::sleep(Duration::from_secs(90)) => { 
+                            _ = tokio::time::sleep(Duration::from_secs(90)) => {
                                 warn!(sender = %sender_clone, flow_id = %flow_id_clone, "SAS confirmation task timed out waiting for emojis/decimals or completion.");
                                 if !sas_clone.is_done() && !sas_clone.is_cancelled() {
                                    info!(sender = %sender_clone, flow_id = %flow_id_clone, "Attempting to cancel SAS due to timeout.");
@@ -373,7 +469,7 @@ pub async fn handle_verification_events(client: Client) {
                         if sas_clone.is_done() {
                             info!(sender = %sender_clone, flow_id = %flow_id_clone, "SAS verification successfully done after action/event. Exiting task.");
                             break;
-                        } 
+                        }
                         if sas_clone.is_cancelled() { // Check separately in case it was cancelled by our timeout action
                             info!(sender = %sender_clone, flow_id = %flow_id_clone, "SAS verification cancelled after action/event. Exiting task.");
                             break;
@@ -435,7 +531,6 @@ pub async fn on_stripped_state_member(
     let room_id = room.room_id();
     if let Err(e) = room.join().await {
         error!("Failed to join room {}: {}", room_id, e);
-        return;
     } else {
         info!("Successfully joined room {}", room_id);
     }
@@ -502,7 +597,7 @@ pub async fn start_sync_loop(
     client: Client,
     initial_sync_settings: SyncSettings, // Renamed for clarity
     connection_monitor: &mut ConnectionMonitor,
-    session_file_path: &PathBuf, // Added
+    session_file_path: &PathBuf,             // Added
     client_store_config: &ClientStoreConfig, // Added
 ) -> Result<()> {
     info!("Starting Matrix sync loop...");
@@ -531,18 +626,21 @@ pub async fn start_sync_loop(
                 current_sync_settings = SyncSettings::default().token(new_sync_token);
             }
             Err(e) => {
-        error!("Sync loop exited with error: {}", e);
-        let should_exit = connection_monitor.connection_failed(format!("Sync loop error: {}", e));
-        if should_exit {
-            return Err(anyhow!(
-                "Connection monitor recommended exit due to critical errors"
-            ));
-        }
+                error!("Sync loop exited with error: {}", e);
+                let should_exit =
+                    connection_monitor.connection_failed(format!("Sync loop error: {}", e));
+                if should_exit {
+                    return Err(anyhow!(
+                        "Connection monitor recommended exit due to critical errors"
+                    ));
+                }
                 // Original error handling for sync failure from client.sync() is adapted here
                 error!("Sync cycle failed: {}", e);
                 let error_details = format!("Sync cycle error: {}", e);
                 if connection_monitor.connection_failed(error_details) {
-                    return Err(anyhow!("Connection monitor recommended exit due to critical sync errors."));
+                    return Err(anyhow!(
+                        "Connection monitor recommended exit due to critical sync errors."
+                    ));
                 }
                 // If not exiting, the loop will continue, implicitly retrying the sync on the next iteration.
                 // A delay might be useful here depending on the nature of expected errors.
@@ -552,5 +650,4 @@ pub async fn start_sync_loop(
     }
     // Unreachable in an infinite loop unless an error causes an early return.
     // Ok(())
-
 }

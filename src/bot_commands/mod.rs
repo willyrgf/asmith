@@ -372,7 +372,7 @@ impl BotCore {
             "bot" => {
                 let args = args_str.trim().to_lowercase();
                 let args_parts: Vec<&str> = args.split_whitespace().collect();
-                let bot_command = args_parts.get(0).cloned().unwrap_or("");
+                let bot_command = args_parts.first().cloned().unwrap_or("");
 
                 match bot_command {
                     "save" => self.bot_management.save_command(&room_id).await?,
