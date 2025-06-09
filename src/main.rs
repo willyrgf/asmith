@@ -18,8 +18,8 @@ mod storage;
 mod task_management;
 
 // Module components we need to use
-use config::init_config;
 use crate::bot_commands::BotCore;
+use config::init_config;
 
 // Global access to BotCore
 static BOT_CORE: OnceCell<Arc<BotCore>> = OnceCell::new();

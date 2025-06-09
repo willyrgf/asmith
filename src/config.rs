@@ -108,7 +108,6 @@ impl BotConfig {
         self.data_dir.join("session.json")
     }
 
-
     pub fn get_homeserver(&self) -> Result<&Url> {
         self.homeserver
             .as_ref()

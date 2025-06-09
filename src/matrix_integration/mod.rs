@@ -24,7 +24,6 @@ use ruma::DeviceId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-
 use std::path::{Path, PathBuf};
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};

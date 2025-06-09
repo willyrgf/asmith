@@ -38,7 +38,9 @@ pub async fn ensure_directories(config: &BotConfig) -> Result<()> {
 /// Initialize the Matrix client with session persistence
 pub async fn init_matrix_client(config: &BotConfig) -> Result<AppContext> {
     if !config.can_login() {
-        warn!("Configuration insufficient for login (homeserver, user ID, and credentials required). Proceeding, but login/restore will likely fail.");
+        warn!(
+            "Configuration insufficient for login (homeserver, user ID, and credentials required). Proceeding, but login/restore will likely fail."
+        );
         // Optionally, could return Err(anyhow!("Cannot initialize client: Insufficient login credentials"))
         // For now, just warn and let it proceed to fail at login/restore attempt.
     }
