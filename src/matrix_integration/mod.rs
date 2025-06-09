@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow, bail};
-// use chrono::{DateTime, Utc}; // Unused
 use futures_util::stream::StreamExt;
 use matrix_sdk::encryption::verification::Verification;
 use matrix_sdk::ruma::OwnedDeviceId;
@@ -33,8 +32,6 @@ use crate::config::APP_NAME;
 use rand::{Rng, rngs::ThreadRng};
 use rand_distr::Alphanumeric;
 use tokio::fs as async_fs; // For async file operations
-
-// Removing MatrixAuthData import for now, will let type inference work or add back if needed
 
 // Configuration for the SQLite store
 #[derive(Debug, Serialize, Deserialize, Clone)] // Added Clone
@@ -647,6 +644,4 @@ pub async fn start_sync_loop(
             }
         }
     }
-    // Unreachable in an infinite loop unless an error causes an early return.
-    // Ok(())
 }

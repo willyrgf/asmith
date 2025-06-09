@@ -24,20 +24,6 @@ use config::init_config;
 // Global access to BotCore
 static BOT_CORE: OnceCell<Arc<BotCore>> = OnceCell::new();
 
-// --- BotManagement Struct ---
-
-// Verification event handling moved to matrix_integration/mod.rs
-
-// --- ConnectionMonitor Struct ---
-// ConnectionMonitor moved to matrix_integration module
-
-// --- Main Function ---
-
-// --- Obsolete Verification Event Handlers ---
-// The functions handle_verification_request and handle_sas_verification were previously defined here.
-// They have been removed as their functionality is now consolidated into the
-// handle_verification_events function, which uses the latest matrix-sdk event handling mechanisms.
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize configuration from arguments and environment variables

@@ -41,8 +41,6 @@ pub async fn init_matrix_client(config: &BotConfig) -> Result<AppContext> {
         warn!(
             "Configuration insufficient for login (homeserver, user ID, and credentials required). Proceeding, but login/restore will likely fail."
         );
-        // Optionally, could return Err(anyhow!("Cannot initialize client: Insufficient login credentials"))
-        // For now, just warn and let it proceed to fail at login/restore attempt.
     }
 
     let session_file_path = config.get_session_file_path();

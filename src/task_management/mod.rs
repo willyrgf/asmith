@@ -3,7 +3,6 @@ use matrix_sdk::ruma::OwnedRoomId;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};
-// use tokio::sync::Mutex; // Not needed here
 
 // --- TaskEvent Constants ---
 #[derive(Debug, Serialize, Deserialize, Clone)]
