@@ -14,12 +14,12 @@ pub enum TaskEvent {
 }
 
 impl TaskEvent {
-    pub fn to_string_readable(&self) -> &str {
+    pub fn to_log_action_string(&self) -> &str {
         match self {
-            TaskEvent::Created => "Created task",
-            TaskEvent::StatusUpdated => "Updated status",
-            TaskEvent::LogAdded => "Added log",
-            TaskEvent::TitleEdited => "Edited title",
+            TaskEvent::Created => "task_created",
+            TaskEvent::StatusUpdated => "task_status_updated",
+            TaskEvent::LogAdded => "task_log_added",
+            TaskEvent::TitleEdited => "task_title_edited",
         }
     }
 }
@@ -58,8 +58,8 @@ impl Task {
         let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let user = sender;
         let action = match extra_info {
-            Some(info) => format!("{}: {}", event_type.to_string_readable(), info),
-            None => event_type.to_string_readable().to_owned(),
+            Some(info) => format!("{}: {}", event_type.to_log_action_string(), info),
+            None => event_type.to_log_action_string().to_owned(),
         };
         self.internal_logs.push((timestamp, user, action));
     }

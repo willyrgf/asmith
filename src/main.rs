@@ -35,8 +35,7 @@ async fn main() -> Result<()> {
     info!("Starting {} v{}...", APP_NAME, APP_VERSION);
     debug!("Configuration: {:?}", config);
 
-    // Ensure required directories exist
-    app::ensure_directories(&config).await?;
+    // App data and matrix store directories are created during config initialization.
 
     // Initialize Matrix client, session, and storage manager
     let context = app::init_matrix_client(&config).await?;
