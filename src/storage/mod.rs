@@ -18,21 +18,26 @@ pub struct StorageData {
 #[derive(Debug, Clone)]
 pub struct StorageManager {
     pub data_dir: PathBuf,
-    pub session_id: Uuid,
+    pub session_id: String,
     pub todo_lists: Arc<Mutex<HashMap<OwnedRoomId, Vec<Task>>>>,
     pub filename_pattern: Regex,
 }
 
 impl StorageManager {
-    pub fn new(data_dir: PathBuf, session_id: Uuid) -> Result<Self> {
+    pub fn new(data_dir: PathBuf, session_id: String) -> Result<Self> {
         if !data_dir.exists() {
             std::fs::create_dir_all(&data_dir)
                 .with_context(|| format!("Failed to create data directory: {:?}", data_dir))?;
         }
+        // This regex is designed to find files from *any* previous session.
+        // It matches the package name, followed by any valid UUID, and then the timestamp.
+        // The session_id field of the struct is used for *saving* new files, not for loading.
+        // This regex is designed to find files from *any* previous session using the Device ID format.
+        // It matches: <pkg_name>_<DEVICE_ID>_<YYYY-MM-DD>_<HH-MM-SS>Z.json
+        // DEVICE_ID is typically an all-caps alphanumeric string.
         let filename_pattern = Regex::new(&format!(
-            r"^{}_{}_[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}_[0-9]{{2}}-[0-9]{{2}}-[0-9]{{2}}Z\\.json$",
-            regex::escape(env!("CARGO_PKG_NAME")),
-            regex::escape(&session_id.to_string())
+            r"^(?i){}_([A-Z0-9]+)_[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}_[0-9]{{2}}-[0-9]{{2}}-[0-9]{{2}}Z\.json$",
+            regex::escape(env!("CARGO_PKG_NAME"))
         ))?;
         Ok(Self {
             data_dir,
@@ -178,7 +183,14 @@ impl StorageManager {
     }
 
     pub fn list_saved_files(&self) -> Result<Vec<String>> {
-        debug!(session_id = %self.session_id, data_dir = %self.data_dir.display(), "Listing saved task files");
+        info!(
+            session_id = %self.session_id,
+            data_dir = %self.data_dir.display(),
+            regex_pattern = %self.filename_pattern.as_str(),
+            "Listing saved task files. Data directory being scanned: '{}'. Regex pattern: '{}'",
+            self.data_dir.display(),
+            self.filename_pattern.as_str()
+        );
 
         let mut valid_files = Vec::new();
 
@@ -211,7 +223,9 @@ impl StorageManager {
             let path = entry.path();
             if path.is_file() {
                 if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
-                    if self.filename_pattern.is_match(filename) {
+                    let is_match_result = self.filename_pattern.is_match(filename);
+                    debug!(file_name = %filename, pattern = %self.filename_pattern.as_str(), will_match = is_match_result, "Checking file against pattern");
+                    if is_match_result {
                         debug!(file_name = %filename, "Found valid task file");
                         valid_files.push(filename.to_owned());
                     } else {

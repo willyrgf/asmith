@@ -15,9 +15,14 @@ use url::Url;
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about)]
 pub struct Args {
-    /// Directory to store data files (default: platform-specific data directory + /asmith_bot)
+    /// Directory to store app data files (e.g. to-do list state).
     #[clap(long)]
     pub data_dir: Option<PathBuf>,
+
+    /// Directory to store Matrix client session data (e.g. crypto keys).
+    /// Defaults to a 'matrix_sdk_store' subdirectory inside the app data_dir.
+    #[clap(long)]
+    pub matrix_store_dir: Option<PathBuf>,
 
     /// Matrix homeserver URL (e.g., https://matrix.org)
     #[clap(long)]
@@ -47,6 +52,7 @@ pub struct Args {
 #[derive(Debug, Clone)]
 pub struct BotConfig {
     pub data_dir: PathBuf,
+    pub matrix_store_dir: PathBuf,
     pub homeserver: Option<Url>,
     pub user_id: Option<OwnedUserId>,
     pub password: Option<String>,
@@ -57,20 +63,33 @@ pub struct BotConfig {
 
 impl BotConfig {
     pub fn from_args(args: Args) -> Result<Self> {
-        // Get data directory or use platform default
-        let data_dir = if let Some(dir) = args.data_dir {
-            dir
-        } else {
-            let mut dir = dirs::data_dir()
-                .ok_or_else(|| anyhow!("Failed to determine platform data directory"))?;
+        let base_dir = {
+            let mut dir = dirs::data_dir().expect("Failed to find a default data directory.");
             dir.push(APP_NAME);
             dir
         };
+        if !base_dir.exists() {
+            std::fs::create_dir_all(&base_dir)?;
+            info!("Created app data directory at {}", base_dir.display());
+        }
 
-        // Create data directory if it doesn't exist
+        // Determine and create the app data directory
+        let data_dir = args.data_dir.unwrap_or_else(|| base_dir.join("data"));
         if !data_dir.exists() {
             std::fs::create_dir_all(&data_dir)?;
-            info!("Created data directory at {}", data_dir.display());
+            info!("Created data_dir store directory at {}", data_dir.display());
+        }
+
+        // Determine and create the matrix store directory
+        let matrix_store_dir = args
+            .matrix_store_dir
+            .unwrap_or_else(|| base_dir.join("matrix_sdk_store"));
+        if !matrix_store_dir.exists() {
+            std::fs::create_dir_all(&matrix_store_dir)?;
+            info!(
+                "Created matrix store directory at {}",
+                matrix_store_dir.display()
+            );
         }
 
         // Check for environment variables for sensitive data
@@ -95,6 +114,7 @@ impl BotConfig {
 
         Ok(Self {
             data_dir,
+            matrix_store_dir,
             homeserver: args.homeserver,
             user_id: args.user_id,
             password,
@@ -105,7 +125,7 @@ impl BotConfig {
     }
 
     pub fn get_session_file_path(&self) -> PathBuf {
-        self.data_dir.join("session.json")
+        self.matrix_store_dir.join("session.json")
     }
 
     pub fn get_homeserver(&self) -> Result<&Url> {

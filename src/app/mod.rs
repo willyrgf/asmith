@@ -3,7 +3,7 @@ use matrix_sdk::{Client, config::SyncSettings};
 use std::sync::Arc;
 use tokio::fs;
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
+
 
 use crate::BOT_CORE;
 use crate::BotCore;
@@ -18,22 +18,7 @@ pub struct AppContext {
     pub client_store_config: ClientStoreConfig, // Added for session persistence
 }
 
-/// Ensures all required application directories exist
-pub async fn ensure_directories(config: &BotConfig) -> Result<()> {
-    // Ensure data directories exist
-    fs::create_dir_all(&config.data_dir).await.context(format!(
-        "Failed to create app data directory at {}",
-        config.data_dir.display()
-    ))?;
 
-    let store_base_path = config.data_dir.join("matrix_sdk_store");
-    fs::create_dir_all(&store_base_path).await.context(format!(
-        "Failed to create matrix_sdk_store base directory at {}",
-        store_base_path.display()
-    ))?;
-
-    Ok(())
-}
 
 /// Initialize the Matrix client with session persistence
 pub async fn init_matrix_client(config: &BotConfig) -> Result<AppContext> {
@@ -44,7 +29,7 @@ pub async fn init_matrix_client(config: &BotConfig) -> Result<AppContext> {
     }
 
     let session_file_path = config.get_session_file_path();
-    let store_base_path = config.data_dir.join("matrix_sdk_store");
+    let store_base_path = &config.matrix_store_dir;
 
     // Destructure to get client_store_config as well
     let (client, initial_sync_token, client_store_config) =
@@ -90,14 +75,19 @@ pub async fn init_matrix_client(config: &BotConfig) -> Result<AppContext> {
     }
 
     // --- Bot's Storage Manager Setup ---
-    let app_level_session_id = Uuid::new_v4();
+    // Use the Matrix device ID as a stable session identifier for storage filenames.
+    let device_id = client
+        .device_id()
+        .ok_or_else(|| anyhow!("Matrix client has no device ID after login"))?
+        .to_string();
+
     let storage_manager = Arc::new(
-        StorageManager::new(config.data_dir.clone(), app_level_session_id)
+        StorageManager::new(config.data_dir.clone(), device_id.clone())
             .context("Failed to create bot's StorageManager")?,
     );
     info!(
-        "Bot StorageManager initialized. App session ID: {}",
-        app_level_session_id
+        "Bot StorageManager initialized. Using Matrix Device ID as session ID: {}",
+        device_id
     );
 
     Ok(AppContext {
